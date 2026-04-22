@@ -98,8 +98,19 @@ for i in range(n_layer):
     state_dict[f'layer{i}.attn_wk'] = matrix(n_embd, n_embd)
     state_dict[f'layer{i}.attn_wv'] = matrix(n_embd, n_embd)
     state_dict[f'layer{i}.attn_wo'] = matrix(n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)
+    # Add MoE initialization code -----
+    num_experts = 2
+        
+    # Router network (Gate)
+    state_dict[f'layer{i}.moe_router'] = matrix(num_experts, n_embd)
+        
+    # Expert 0
+    state_dict[f'layer{i}.expert0_fc1'] = matrix(4 * n_embd, n_embd)
+    state_dict[f'layer{i}.expert0_fc2'] = matrix(n_embd, 4 * n_embd)
+        
+    # Expert 1
+    state_dict[f'layer{i}.expert1_fc1'] = matrix(4 * n_embd, n_embd)
+    state_dict[f'layer{i}.expert1_fc2'] = matrix(n_embd, 4 * n_embd)
 
     lora_rank = 2  # Set low rank to 2
         
@@ -213,10 +224,26 @@ def gpt(token_id, pos_id, keys, values):
         # 2) MLP block
         x_residual = x
         x = rmsnorm(x)
-        x = linear(x, state_dict[f'layer{li}.mlp_fc1'])
-        x = [gelu(xi) for xi in x]
-        x = linear(x, state_dict[f'layer{li}.mlp_fc2'])
-        x = [a + b for a, b in zip(x, x_residual)]
+        # Router gating calculation 
+        router_logits = linear(x, state_dict[f'layer{li}.moe_router'])
+        gates = softmax(router_logits) 
+        
+        # Expert 0 calculation
+        e0 = linear(x, state_dict[f'layer{li}.expert0_fc1'])
+        e0 = [gelu(xi) for xi in e0]
+        e0 = linear(e0, state_dict[f'layer{li}.expert0_fc2'])
+        
+        # Expert 1 calculation
+        e1 = linear(x, state_dict[f'layer{li}.expert1_fc1'])
+        e1 = [gelu(xi) for xi in e1]
+        e1 = linear(e1, state_dict[f'layer{li}.expert1_fc2'])
+        
+        # Weighted sum output
+        # 公式: y = G_0 * E_0(x) + G_1 * E_1(x)
+        moe_out = [gates[0] * e0_i + gates[1] * e1_i for e0_i, e1_i in zip(e0, e1)]
+        
+        # Residual connection
+        x = [a + b for a, b in zip(moe_out, x_residual)]
 
     logits = linear(x, state_dict['lm_head'])
     return logits
