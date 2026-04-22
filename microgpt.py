@@ -100,6 +100,17 @@ for i in range(n_layer):
     state_dict[f'layer{i}.attn_wo'] = matrix(n_embd, n_embd)
     state_dict[f'layer{i}.mlp_fc1'] = matrix(4 * n_embd, n_embd)
     state_dict[f'layer{i}.mlp_fc2'] = matrix(n_embd, 4 * n_embd)
+
+    lora_rank = 2  # Set low rank to 2
+        
+    # Attach LoRA to Attention Query (wq)
+    state_dict[f'layer{i}.attn_wq_lora_A'] = matrix(lora_rank, n_embd)
+    state_dict[f'layer{i}.attn_wq_lora_B'] = [[Value(0.0) for _ in range(lora_rank)] for _ in range(n_embd)]
+        
+    # Attach LoRA to Attention Value (wv)
+    state_dict[f'layer{i}.attn_wv_lora_A'] = matrix(lora_rank, n_embd)
+    state_dict[f'layer{i}.attn_wv_lora_B'] = [[Value(0.0) for _ in range(lora_rank)] for _ in range(n_embd)]
+
 params = [p for mat in state_dict.values() for row in mat for p in row] # flatten params into a single list[Value]
 print(f"num params: {len(params)}")
 
@@ -107,6 +118,22 @@ print(f"num params: {len(params)}")
 # Follow GPT-2, blessed among the GPTs, with minor differences: layernorm -> rmsnorm, no biases, GeLU -> ReLU
 def linear(x, w):
     return [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
+
+def lora_linear(x, w, lora_A, lora_B, alpha=1.0):
+    """
+    LoRA linear layer: y = Wx + alpha * B(Ax)
+    """
+    # 1. Original path: Wx
+    out = linear(x, w)
+    
+    # 2. Dimensionality reduction path: Ax
+    ax = linear(x, lora_A)
+    
+    # 3. Dimensionality expansion path: B(Ax)
+    bax = linear(ax, lora_B)
+    
+    # 4. Merge outputs
+    return [o + ba * alpha for o, ba in zip(out, bax)]
 
 def softmax(logits):
     max_val = max(val.data for val in logits)
@@ -129,9 +156,15 @@ def gpt(token_id, pos_id, keys, values):
         # 1) Multi-head Attention block
         x_residual = x
         x = rmsnorm(x)
-        q = linear(x, state_dict[f'layer{li}.attn_wq'])
+        # Apply LoRA to Query
+        q = lora_linear(x, state_dict[f'layer{li}.attn_wq'], state_dict[f'layer{li}.attn_wq_lora_A'], state_dict[f'layer{li}.attn_wq_lora_B'])
+        
+        # Key usually doesn't need LoRA, keep as is
         k = linear(x, state_dict[f'layer{li}.attn_wk'])
-        v = linear(x, state_dict[f'layer{li}.attn_wv'])
+        
+        # Apply LoRA to Value
+        v = lora_linear(x, state_dict[f'layer{li}.attn_wv'], state_dict[f'layer{li}.attn_wv_lora_A'], state_dict[f'layer{li}.attn_wv_lora_B'])
+        
         keys[li].append(k)
         values[li].append(v)
         x_attn = []
