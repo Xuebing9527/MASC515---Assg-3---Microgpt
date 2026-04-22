@@ -135,6 +135,30 @@ def lora_linear(x, w, lora_A, lora_B, alpha=1.0):
     # 4. Merge outputs
     return [o + ba * alpha for o, ba in zip(out, bax)]
 
+def apply_rotary_emb(xq, pos):
+    """
+    Apply Rotary Position Embedding (RoPE)
+    Rotate adjacent pairs of elements in the vector in a 2D plane.
+    """
+    import math
+    out = []
+    d = len(xq)
+    for i in range(0, d, 2):
+        # Calculate rotation frequency
+        freq = 10000.0 ** (-i / d)
+        theta = pos * freq
+        cos_theta = math.cos(theta)
+        sin_theta = math.sin(theta)
+        
+        # Take a pair of adjacent elements
+        x0 = xq[i]
+        x1 = xq[i+1]
+        
+        # Matrix multiplication for rotation
+        out.append(x0 * cos_theta - x1 * sin_theta)
+        out.append(x0 * sin_theta + x1 * cos_theta)
+    return out
+
 def softmax(logits):
     max_val = max(val.data for val in logits)
     exps = [(val - max_val).exp() for val in logits]
@@ -170,9 +194,16 @@ def gpt(token_id, pos_id, keys, values):
         x_attn = []
         for h in range(n_head):
             hs = h * head_dim
+            # 1. Extract Query and apply RoPE for the current position
             q_h = q[hs:hs+head_dim]
-            k_h = [ki[hs:hs+head_dim] for ki in keys[li]]
+            q_h = apply_rotary_emb(q_h, pos_id)
+            
+            # Extract all Keys and apply RoPE based on their historical position (t)
+            k_h = [apply_rotary_emb(ki[hs:hs+head_dim], t) for t, ki in enumerate(keys[li])]
+            
+            # 3. Value remains unchanged, no rotation needed
             v_h = [vi[hs:hs+head_dim] for vi in values[li]]
+
             attn_logits = [sum(q_h[j] * k_h[t][j] for j in range(head_dim)) / head_dim**0.5 for t in range(len(k_h))]
             attn_weights = softmax(attn_logits)
             head_out = [sum(attn_weights[t] * v_h[t][j] for t in range(len(v_h))) for j in range(head_dim)]
