@@ -11,6 +11,20 @@ import math     # math.log, math.exp
 import random   # random.seed, random.choices, random.gauss, random.shuffle
 random.seed(42) # Let there be order among chaos
 
+def gelu(v):
+    """
+    Gaussian Error Linear Unit (GELU) activation function.
+    Safely implemented using only basic operations and .exp() to support the custom Value class.
+    """
+    import math
+    c1 = math.sqrt(2.0 / math.pi)
+    c2 = 0.044715
+    inner = (v + (v**3) * c2) * c1
+    # equivalent to tanh(inner) but using exp()
+    e2 = (inner * 2.0).exp()
+    tanh_val = (e2 - 1.0) / (e2 + 1.0)
+    return v * 0.5 * (1.0 + tanh_val)
+
 # Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)
 if not os.path.exists('input.txt'):
     import urllib.request
@@ -136,7 +150,7 @@ def gpt(token_id, pos_id, keys, values):
         x_residual = x
         x = rmsnorm(x)
         x = linear(x, state_dict[f'layer{li}.mlp_fc1'])
-        x = [xi.relu() for xi in x]
+        x = [gelu(xi) for xi in x]
         x = linear(x, state_dict[f'layer{li}.mlp_fc2'])
         x = [a + b for a, b in zip(x, x_residual)]
 
